@@ -14,6 +14,16 @@ from tensorflow.keras.losses import binary_crossentropy
 from tensorflow.keras.losses import sparse_categorical_crossentropy
 
 ## Load Darcknet weights
+YOLO_V3_LAYERS = [
+  'yolo_darknet',
+  'yolo_conv_0',
+  'yolo_output_0',
+  'yolo_conv_1',
+  'yolo_output_1',
+  'yolo_conv_2',
+  'yolo_output_2',
+]
+
 def load_darknet_weights(model, weights_file):
 	wf = open(weights_file, 'rb')
 	major, minor, revision, seen, _ = np.fromfile(wf, dtype=np.int32, count=5)
@@ -60,6 +70,12 @@ def load_darknet_weights(model, weights_file):
 	assert len(wf.read()) == 0, 'failed to read all data'
 	wf.close()
 
+def freeze_all(model, frozen=True):
+    model.trainable = not frozen
+    if isinstance(model, tf.keras.Model):
+        for l in model.layers:
+            freeze_all(l, frozen)
+
 
 ## Intersection-over-Union and interval overlap
 def interval_overlap(interval_1, interval_2):
@@ -104,6 +120,11 @@ class BatchNormalization(tf.keras.layers.BatchNormalization):
 
 
 ## CREATE CUSTOM MODEL ##########################################################################################
+yolo_anchors = np.array([(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),
+                         (59, 119), (116, 90), (156, 198), (373, 326)],
+                        np.float32) / 416
+yolo_anchor_masks = np.array([[6, 7, 8], [3, 4, 5], [0, 1, 2]])
+
 def DarknetConv(x, filters, size, strides=1, batch_norm=True):
 	if strides == 1:
 		padding = 'same'
@@ -173,6 +194,35 @@ def YoloOutput(filters, anchors, classes, name=None):
 		return tf.keras.Model(inputs, x, name=name)(x_in)
 	return yolo_output
 
+def YoloV3(size=None, channels=3, anchors=yolo_anchors, masks=yolo_anchor_masks, classes=80, training=False):
+	x = inputs = Input([size, size, channels])
+
+	x_36, x_61, x = Darknet(name='yolo_darknet')(x)
+
+	x = YoloConv(512, name='yolo_conv_0')(x)
+	output_0 = YoloOutput(512, len(masks[0]), classes, name='yolo_output_0')(x)
+
+	x = YoloConv(256, name='yolo_conv_1')((x, x_61))
+	output_1 = YoloOutput(256, len(masks[1]), classes, name='yolo_output_1')(x)
+
+	x = YoloConv(128, name='yolo_conv_2')((x, x_36))
+	output_2 = YoloOutput(128, len(masks[2]), classes, name='yolo_output_2')(x)
+
+	if training:
+		return Model(inputs, (output_0, output_1, output_2), name='yolov3')
+
+	boxes_0 = Lambda(lambda x: yolo_boxes(x, anchors[masks[0]], classes),
+					name='yolo_boxes_0')(output_0)
+	boxes_1 = Lambda(lambda x: yolo_boxes(x, anchors[masks[1]], classes),
+					name='yolo_boxes_1')(output_1)
+	boxes_2 = Lambda(lambda x: yolo_boxes(x, anchors[masks[2]], classes),
+					name='yolo_boxes_2')(output_2)
+
+	outputs = Lambda(lambda x: nonMaximumSuppression(x, anchors, masks, classes),
+					name='nonMaximumSuppression')((boxes_0[:3], boxes_1[:3], boxes_2[:3]))
+
+	return Model(inputs, outputs, name='yolov3')
+	
 def yolo_boxes(pred, anchors, classes):
 	grid_size = tf.shape(pred)[1]
 	box_xy, box_wh, score, class_probs = tf.split(pred, (2, 2, 1, classes), axis=-1)
@@ -224,6 +274,30 @@ def nonMaximumSuppression(outputs, anchors, masks, classes, yolo_iou_threshold=0
   ################################################################################################################
 
 ## LOSSES
+def broadcast_iou(box_1, box_2):
+    # box_1: (..., (x1, y1, x2, y2))
+    # box_2: (N, (x1, y1, x2, y2))
+
+    # broadcast boxes
+    box_1 = tf.expand_dims(box_1, -2)
+    box_2 = tf.expand_dims(box_2, 0)
+    # new_shape: (..., N, (x1, y1, x2, y2))
+    new_shape = tf.broadcast_dynamic_shape(tf.shape(box_1), tf.shape(box_2))
+    box_1 = tf.broadcast_to(box_1, new_shape)
+    box_2 = tf.broadcast_to(box_2, new_shape)
+
+    int_w = tf.maximum(tf.minimum(box_1[..., 2], box_2[..., 2]) -
+                       tf.maximum(box_1[..., 0], box_2[..., 0]), 0)
+    int_h = tf.maximum(tf.minimum(box_1[..., 3], box_2[..., 3]) -
+                       tf.maximum(box_1[..., 1], box_2[..., 1]), 0)
+    int_area = int_w * int_h
+    box_1_area = (box_1[..., 2] - box_1[..., 0]) * \
+        (box_1[..., 3] - box_1[..., 1])
+    box_2_area = (box_2[..., 2] - box_2[..., 0]) * \
+        (box_2[..., 3] - box_2[..., 1])
+    return int_area / (box_1_area + box_2_area - int_area)
+
+
 def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
     def yolo_loss(y_true, y_pred):
         # 1. transform all pred outputs
@@ -270,7 +344,7 @@ def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
         obj_loss = obj_mask * obj_loss + \
             (1 - obj_mask) * ignore_mask * obj_loss
         # TODO: use binary_crossentropy instead
-        class_loss = obj_mask * sparse_categorical_crossentropy(
+        class_loss = obj_mask * binary_crossentropy(
             true_class_idx, pred_class)
 
         # 6. sum over (batch, gridx, gridy, anchors) => (batch, 1)
@@ -346,6 +420,68 @@ def transform_targets(y_train, anchors, anchor_masks, classes):
 
 	return tuple(outputs) # [x, y, w, h, obj, class]
 
+def transform_images(x_train, size):
+    x_train = tf.image.resize(x_train, (size, size))
+    x_train = x_train / 255
+    return x_train
+
 
 def preprocess_image(x_train, size):
   	return (tf.image.resize(x_train, (size, size))) / 255
+
+
+def parse_tfrecords(tfrecord, size=256):
+	"""
+	load single example from a tfrecords datasets
+	"""
+
+	## image feature directory of image
+	IMAGE_FEATURE_MAP = {
+    # 'image/width': tf.io.FixedLenFeature([], tf.int64),
+    # 'image/height': tf.io.FixedLenFeature([], tf.int64),
+    # 'image/filename': tf.io.FixedLenFeature([], tf.string),
+    # 'image/source_id': tf.io.FixedLenFeature([], tf.string),
+    # 'image/key/sha256': tf.io.FixedLenFeature([], tf.string),
+    'image/encoded': tf.io.FixedLenFeature([], tf.string),
+    # 'image/format': tf.io.FixedLenFeature([], tf.string),
+    'image/object/bbox/xmin': tf.io.VarLenFeature(tf.float32),
+    'image/object/bbox/ymin': tf.io.VarLenFeature(tf.float32),
+    'image/object/bbox/xmax': tf.io.VarLenFeature(tf.float32),
+    'image/object/bbox/ymax': tf.io.VarLenFeature(tf.float32),
+    # 'image/object/class/text': tf.io.VarLenFeature(tf.string),
+    'image/object/class/label': tf.io.VarLenFeature(tf.int64),
+    # 'image/object/difficult': tf.io.VarLenFeature(tf.int64),
+    # 'image/object/truncated': tf.io.VarLenFeature(tf.int64),
+    # 'image/object/view': tf.io.VarLenFeature(tf.string),
+	}
+
+	## load single example
+	x = tf.io.parse_single_example(tfrecord, IMAGE_FEATURE_MAP)
+
+	# x_train image preprocessing 
+	x_train = tf.image.decode_png(x['image/encoded'], channels=3)
+	x_train = tf.image.resize(x_train, (size, size))
+
+	# y_train (bounding boxes and labels)
+	xmin = tf.sparse.to_dense(x['image/object/bbox/xmin'])
+	ymin = tf.sparse.to_dense(x['image/object/bbox/ymin'])
+	xmax = tf.sparse.to_dense(x['image/object/bbox/xmax'])
+	ymax = tf.sparse.to_dense(x['image/object/bbox/ymax'])
+	labels = tf.sparse.to_dense(x['image/object/class/label'])
+	labels = tf.cast(labels, tf.float32)
+	y_train = tf.stack([xmin, ymin, xmax, ymax, labels], axis=1)
+
+	return x_train, y_train
+
+## Drow outputs
+def draw_outputs(img, outputs):
+	boxes, scores, classes, nums = outputs
+	boxes, scores, classes, nums = boxes[0], scores[0], classes[0], nums[0]
+	wh = np.flip(img.shape[0:2])
+	for i in range(nums):
+		x1y1 = tuple((np.array(boxes[i][0:2]) * wh).astype(np.int32))
+		x2y2 = tuple((np.array(boxes[i][2:4]) * wh).astype(np.int32))
+		img = cv2.rectangle(img, x1y1, x2y2, (255, 0, 0), 2)
+		img = cv2.putText(img, ' {:.4f}'.format(scores[i]),
+		x1y1, cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (0, 0, 255), 2)
+	return img
