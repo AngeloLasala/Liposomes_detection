@@ -5,7 +5,7 @@ from yolov3_utils import load_darknet_weights, YoloV3
 import tensorflow as tf
 
 flags.DEFINE_string('weights', './Pretreined_yolo/yolov3.weights', 'path to weights file')
-flags.DEFINE_string('output', './Pretreined_yolo//checkpoints/yolov3.tf', 'path to output')
+flags.DEFINE_string('output', './Pretreined_yolo/checkpoints/yolov3.tf', 'path to output')
 flags.DEFINE_boolean('tiny', False, 'yolov3 or yolov3-tiny')
 flags.DEFINE_integer('num_classes', 80, 'number of classes in the model')
 
