@@ -9,6 +9,65 @@ import cv2
 import time
 from yolov3_utils import *
 
+def analysis_test(test_dataset):
+	"""
+	Analyse and compare the results between real bbox and predicted ones.
+	- Number of detected liposomes
+	- dimension of detected liposomes
+	- plot images
+
+	Parameters
+	----------
+	test_dataset : tensorflow dataset
+		test dataset of images and labels
+
+	Returns
+	-------
+	"""
+	for img, label in test_dataset.take(1):
+		# take images and label
+		img_real, label_real = img.numpy()[0]/255, label.numpy()[0]
+		
+		# Real images
+		boxes, lab = label_real[:, 0:4], label_real[:,-1]
+		wh = np.flip(img_real.shape[0:2])
+		print(img.shape)
+		
+		real_nums = (len(boxes))
+		for i in range(real_nums):
+			x1y1 = tuple((np.array(boxes[i][0:2])*wh).astype(np.int32))
+			x2y2 = tuple((np.array(boxes[i][2:4])*wh).astype(np.int32))
+			img_real = cv2.rectangle(img_real, x1y1, x2y2, (255, 0, 0), 2)
+			# img = cv2.putText(img, ' {:.4f}'.format(scores[i]),
+			# x1y1, cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (0, 0, 255), 2)
+
+		# prediction
+		pred = yolo(img.numpy()/255)
+		boxes_0 = yolo_boxes(pred[0], yolo_anchors[yolo_anchor_masks[0]], classes=1)
+		boxes_1 = yolo_boxes(pred[1], yolo_anchors[yolo_anchor_masks[1]], classes=1)
+		boxes_2 = yolo_boxes(pred[2], yolo_anchors[yolo_anchor_masks[2]], classes=1)
+
+		boxes, scores, classes, nums = nonMaximumSuppression((boxes_0[:3], boxes_1[:3], boxes_2[:3]), yolo_anchors, yolo_anchor_masks, classes=1,
+															yolo_iou_threshold=0.1, yolo_score_threshold=0.1)
+
+		# print(nums.numpy())
+		# for i,j in zip(boxes[0], scores[0]):
+		# 	print(i.numpy(), j.numpy())
+
+		img_pred = draw_outputs(img.numpy()[0]/255, (boxes, scores, classes, nums))
+
+		## Plot and print the results
+		print('NUMBER OF LIPOSOMES')
+		print(f'real number: {real_nums} - predicted number {nums[0]}')
+		fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(15,6))
+
+		ax[0].set_title('Real Boundig Box')
+		ax[0].imshow(img_real)
+		ax[0].axis('off')
+
+		ax[1].set_title('Predicted Boundig Box')
+		ax[1].imshow(img_pred)
+		ax[1].axis('off')
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description='Main file to train yolov3')
@@ -24,7 +83,7 @@ if __name__ == '__main__':
 	yolo_iou_threshold   = 0.05           # iou threshold
 	yolo_score_threshold = 0.05           # score threshold
 
-	checkpoint = 'checkpoints/yolov3_train_10.tf'
+	checkpoint = 'checkpoints/yolov3_train_20.tf'
 
 	BUFFER_SIZE = args.buffer_size
 	BATCH = args.batch
@@ -46,35 +105,13 @@ if __name__ == '__main__':
 	test_dataset = test_dataset.map(parse_tfrecords)
 	test_dataset = test_dataset.batch(BATCH)
 
-	plot_dataset(test_dataset)
+	analysis_test(test_dataset)
+		
 	plt.show()
 
-	# prediction = yolo.predict(test_dataset, verbose=1)
-	
-
-	# name = 'Test/IMG01493.JPG'
-	# img = tf.image.decode_image(open(name, 'rb').read(), channels=3)
-	# img = tf.expand_dims(img, 0)
-	# img = preprocess_image(img, SIZE)
-
-	# pred = yolo(img)
-	# print(len(pred))
-
-	# ## postprocess yolo output
-	# boxes_0 = yolo_boxes(pred[0], yolo_anchors[yolo_anchor_masks[0]], classes=1)
-	# boxes_1 = yolo_boxes(pred[1], yolo_anchors[yolo_anchor_masks[1]], classes=1)
-	# boxes_2 = yolo_boxes(pred[2], yolo_anchors[yolo_anchor_masks[2]], classes=1)
-
-	# boxes, scores, classes, nums = nonMaximumSuppression((boxes_0[:3], boxes_1[:3], boxes_2[:3]), yolo_anchors, yolo_anchor_masks, classes=1,
-	# 													yolo_iou_threshold=0.1, yolo_score_threshold=0.1)
-	# print(boxes.shape)
 	# print(scores.shape)
 	# print(classes.shape)
 	# print(nums.shape)
 
-	# for i,j in zip(boxes[0], scores[0]):
-	# 	print(i.numpy(),j.numpy())
-
-	# img = cv2.imread(name)
-	# img = draw_outputs(img, (boxes, scores, classes, nums))
 	# cv2.imwrite('out.jpg', img)
+	
