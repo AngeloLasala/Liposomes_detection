@@ -12,6 +12,7 @@ from tensorflow.keras.layers import MaxPool2D, UpSampling2D, ZeroPadding2D
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.losses import binary_crossentropy
 from tensorflow.keras.losses import sparse_categorical_crossentropy
+import matplotlib.pyplot as plt
 
 ## Load Darcknet weights
 YOLO_V3_LAYERS = [
@@ -97,19 +98,12 @@ def intersectionOverUnion(box1, box2):
 	union_area = w1*h1 + w2*h2 - intersect_area
 	return float(intersect_area) / union_area
 
-## draw the output
-def draw_outputs(img, outputs, class_names):
-	boxes, score, classes, nums = outputs
-	boxes, score, classes, nums = boxes[0], score[0], classes[0], nums[0]
-	wh = np.flip(img.shape[0:2])
-	for i in range(nums):
-		x1y1 = tuple((np.array(boxes[i][0:2]) * wh).astype(np.int32))
-		x2y2 = tuple((np.array(boxes[i][2:4]) * wh).astype(np.int32))
-		img = cv2.rectangle(img, x1y1, x2y2, (255, 0, 0), 2)
-		img = cv2.putText(img, '{} {:.4f}'.format(
-		class_names[int(classes[i])], score[i]),
-		x1y1, cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (0, 0, 255), 2)
-	return img
+
+## CREATE CUSTOM MODEL ##########################################################################################
+yolo_anchors = np.array([(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),
+                         (59, 119), (116, 90), (156, 198), (373, 326)],
+                        np.float32) / 416
+yolo_anchor_masks = np.array([[6, 7, 8], [3, 4, 5], [0, 1, 2]])
 
 ## Batch normalization
 class BatchNormalization(tf.keras.layers.BatchNormalization):
@@ -117,13 +111,6 @@ class BatchNormalization(tf.keras.layers.BatchNormalization):
 		if training is None: training = tf.constant(False)
 		training = tf.logical_and(training, self.trainable)
 		return super().call(x, training)
-
-
-## CREATE CUSTOM MODEL ##########################################################################################
-yolo_anchors = np.array([(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),
-                         (59, 119), (116, 90), (156, 198), (373, 326)],
-                        np.float32) / 416
-yolo_anchor_masks = np.array([[6, 7, 8], [3, 4, 5], [0, 1, 2]])
 
 def DarknetConv(x, filters, size, strides=1, batch_norm=True):
 	if strides == 1:
@@ -430,7 +417,39 @@ def preprocess_image(x_train, size):
   	return (tf.image.resize(x_train, (size, size))) / 255
 
 
-def parse_tfrecords(tfrecord, size=256):
+
+def data_augumentation(x_train, y_train):
+	"""
+	Add data augumentation to improve the variability of each images
+	
+	Parameters
+	----------
+	x_train : tensor
+			input images
+
+	y_train : tensor
+			input label, [xmin, ymin, xmax, ymax, labels]
+
+	Returns
+	-------
+	x_train : tensor
+			processed input image
+	
+	y_train : tensor
+			processed input label
+	"""
+
+	## random brightness and contrast
+	x_train = tf.image.random_brightness(x_train, 0.2)
+	x_train = tf.image.random_contrast(x_train, 0.75, 2.0)
+	# x_train = tf.image.random_saturation(x_train, 0.90, 1.25)
+	# x_train = tf.image.random_hue(x_train, 0.1)
+
+	y_train = y_train
+	return x_train, y_train
+	
+
+def parse_tfrecords(tfrecord, size=416):
 	"""
 	load single example from a tfrecords datasets
 	"""
@@ -471,6 +490,8 @@ def parse_tfrecords(tfrecord, size=256):
 	labels = tf.cast(labels, tf.float32)
 	y_train = tf.stack([xmin, ymin, xmax, ymax, labels], axis=1)
 
+	# Data Augumentation
+	# x_train, y_train = data_augumentation(x_train, y_train)
 	return x_train, y_train
 
 ## Drow outputs
@@ -485,3 +506,36 @@ def draw_outputs(img, outputs):
 		img = cv2.putText(img, ' {:.4f}'.format(scores[i]),
 		x1y1, cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (0, 0, 255), 2)
 	return img
+
+def plot_dataset(dataset, take=5, original_shape=(1840, 3264)):
+	"""
+	Plot the images and the label of given dataset
+	
+	Parameters
+	----------
+	dataset : tensorflow dataset
+		dataset from TFR records
+	"""
+	final_images, final_labels = [], []
+	for img, label in dataset.take(take):
+		img, label = img.numpy()[0]/255, label.numpy()[0]
+		boxes, lab = label[:, 0:4], label[:,-1]
+		wh = np.flip(img.shape[0:2])
+		print(img.shape)
+		
+		for i in range(len(boxes)):
+			x1y1 = tuple((np.array(boxes[i][0:2]) * wh).astype(np.int32))
+			x2y2 = tuple((np.array(boxes[i][2:4]) * wh).astype(np.int32))
+			img = cv2.rectangle(img, x1y1, x2y2, (255, 0, 0), 2)
+			# img = cv2.putText(img, ' {:.4f}'.format(scores[i]),
+			# x1y1, cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (0, 0, 255), 2)
+
+		final_images.append(img)
+		final_labels.append(label)
+
+		plt.figure()
+		plt.imshow(img)
+		plt.axis('off')
+
+	return final_images, final_labels
+		
