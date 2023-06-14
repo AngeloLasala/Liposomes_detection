@@ -10,6 +10,8 @@ import argparse
 import tensorflow as tf
 import lxml.etree
 import tqdm
+from PIL import Image
+import matplotlib.pyplot as plt
 
 
 def build_example(image_path, xml_path, label_dict=None):
