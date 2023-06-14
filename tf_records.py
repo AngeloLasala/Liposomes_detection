@@ -15,7 +15,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 
 
-def build_example(image_path, xml_path):
+def build_example(image_path, xml_path, label_dict=None):
 	## get the filename
 	filename = os.path.basename(image_path).encode('utf8')
 
@@ -44,14 +44,16 @@ def build_example(image_path, xml_path):
 
 	
 	for obj in xml.xpath('//object'): #loop over element in the images, aka bounding box
-		print(obj)
+		# print(obj)
 		xmin.append(float(obj.xpath('bndbox/xmin')[0].text) / width)
 		ymin.append(float(obj.xpath('bndbox/ymin')[0].text) / height)
 		xmax.append(float(obj.xpath('bndbox/xmax')[0].text) / width)
 		ymax.append(float(obj.xpath('bndbox/ymax')[0].text) / height)
-		print(obj.xpath('name')[0])
 		classes_text.append(obj.xpath('name')[0].text.encode('utf8'))
-		classes.append(1)
+		if label_dict==None:
+			classes.append(1)
+		else:
+			classes.append(label_dict[obj.xpath('name')[0].text.encode('utf8')]) 
 		truncated.append(int(obj.xpath('truncated')[0].text))
 		views.append(obj.xpath('pose')[0].text.encode('utf8'))
 
@@ -60,8 +62,10 @@ def build_example(image_path, xml_path):
 	print(f' ymin: {ymin}')
 	print(f' ymax: {ymax}')
 	print(f' classes_text: {classes_text}')
+	print(f' classes: {classes}')
 	print(f' truncated: {truncated}')
 	print(f' views: {views}')
+	print('---------------------------------------------------------------------')
 
 	example = tf.train.Example(features=tf.train.Features(feature={
 		'image/height': tf.train.Feature(int64_list=tf.train.Int64List(value=[height])),
@@ -85,7 +89,7 @@ def build_example(image_path, xml_path):
 	}))
 	return example
 
-def main(data_dir, output):
+def main(data_dir, output, label_dict):
 	"""
 	Main function to covert VOC dataset into TFRecords.
 	"""
@@ -95,7 +99,7 @@ def main(data_dir, output):
 	for img in tqdm.tqdm(image_list):
 		xml = 'Annotations/Annotations/' + img.split('/')[-1].split('.')[0] + '.xml'
 		print(img)
-		tf_example = build_example(img, xml)
+		tf_example = build_example(img, xml, label_dict)
 		writer.write(tf_example.SerializeToString())
 	writer.close()
 
@@ -104,8 +108,8 @@ if __name__ == '__main__':
 	parser.add_argument("data_directory", type=str, help="VOC dataset directory")
 	args = parser.parse_args()
 	
-	## DA MODIFICARE
-	# 1) parte relative alle classes, come farlo automatico
+	label_dict = {b'Empty_GUV':0, b'Fused_GUV':1, b'Blurry_GUV':2, b'Full_GUV':3, 
+                  b'Faint_GUV':4, b'Deformed_GUV':5, b'Edge_GUV':6}
 	
 	for k in ['train', 'test', 'validation']:
-		main(args.data_directory + '/' + k, k + '.tfrecord')
+		main(args.data_directory + '/' + k, k + '_label.tfrecord', label_dict)
